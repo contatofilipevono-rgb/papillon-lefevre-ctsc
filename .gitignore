@@ -1,0 +1,8 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+dados_brutos/
+*.zip
+video/node_modules/
+video/out/
