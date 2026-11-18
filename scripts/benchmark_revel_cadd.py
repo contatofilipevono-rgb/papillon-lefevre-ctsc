@@ -45,7 +45,7 @@ def main():
         chunk = keys[i:i + 100]
         body = json.dumps({"ids": chunk}).encode()
         req = urllib.request.Request(
-            "https://myvariant.info/v1/variant?assembly=hg38&fields=dbnsfp.revel.score,dbnsfp.cadd.phred",
+            "https://myvariant.info/v1/variant?assembly=hg38&fields=dbnsfp.revel.score,dbnsfp.cadd.phred,dbnsfp.esm1b.score,dbnsfp.metarnn.score",
             data=body,
             headers={"Content-Type": "application/json", "User-Agent": "academic/0.1"},
         )
@@ -53,17 +53,14 @@ def main():
         for item in res:
             q = item.get("query")
             db = item.get("dbnsfp") or {}
-            rev = (db.get("revel") or {}).get("score")
-            cad = (db.get("cadd") or {}).get("phred")
-            if isinstance(rev, list):
-                rev = rev[0]
-            if isinstance(cad, list):
-                cad = cad[0]
-            scores[q] = (rev, cad)
+            def _get(k1, k2):
+                val = (db.get(k1) or {}).get(k2)
+                return val[0] if isinstance(val, list) else val
+            scores[q] = (_get("revel", "score"), _get("cadd", "phred"), _get("esm1b", "score"), _get("metarnn", "score"))
 
-    for label, idx in (("REVEL", 0), ("CADD phred", 1)):
-        p_vals = [float(scores[k][idx]) for k, r in ids_to_query.items() if r in P_all and k in scores and scores[k][idx] is not None]
-        c_vals = [float(scores[k][idx]) for k, r in ids_to_query.items() if r in C_ac2 and k in scores and scores[k][idx] is not None]
+    for label, idx, invert in (("REVEL", 0, False), ("CADD phred", 1, False), ("ESM-1b", 2, True), ("MetaRNN", 3, False)):
+        p_vals = [(-1 if invert else 1) * float(scores[k][idx]) for k, r in ids_to_query.items() if r in P_all and k in scores and scores[k][idx] is not None]
+        c_vals = [(-1 if invert else 1) * float(scores[k][idx]) for k, r in ids_to_query.items() if r in C_ac2 and k in scores and scores[k][idx] is not None]
         if p_vals and c_vals:
             u, p = stats.mannwhitneyu(p_vals, c_vals, alternative="two-sided")
             auc = u / (len(p_vals) * len(c_vals))
