@@ -62,3 +62,20 @@ Across `152` non-coding *CTSC* variants scored in `K562`, AlphaGenome v2 achieve
 Our pre-registered analysis demonstrates that protein destabilization (`ΔΔG`) and catalytic triad disruption are the principal structural mechanisms of *CTSC* missense pathogenicity, while tetramer interface proximity alone is non-discriminative—an informative negative result that prevents overfitting. Importantly, evaluating a held-out post-2015 external cohort revealed a realistic sensitivity drop (`75.0%` to `58.1%`), underscoring that leave-one-out cross-validation alone overestimates generalization. Finally, the mechanistic dissociation of `A253T` highlights the necessity of pairing 3D stability models with nucleotide-level splicing predictors such as AlphaGenome v2.
 
 Limitations include: (1) small sample size of homozygous missense controls in `1K3B` (`n = 4`); (2) reliance on a single `ΔΔG` predictor (ThermoMPNN); (3) timeout of the Ensembl VEP REST endpoint preventing direct SpliceAI comparison in this run; and (4) lack of laboratory validation for prioritized non-coding VUS.
+
+---
+
+## References
+
+1. Toomes C, James J, Wood AJ, et al. Loss-of-function mutations in the cathepsin C gene result in periodontal disease and palmoplantar keratosis. *Nat Genet*. 1999. PMID: `10581027`.
+2. Hart TC, Hart PS, Michalec MD, et al. Identification of cathepsin C mutations in ethnically diverse Papillon-Lefèvre syndrome patients. *J Med Genet*. 2000. PMID: `11106356`, PMCID: `PMC1734492`.
+3. Turk D, Janjić V, Stern I, et al. Structure of human dipeptidyl peptidase I (cathepsin C): exclusion domain added to an endopeptidase framework creates the machine for activation of granular serine proteases. *EMBO J*. 2001. PMID: `11726493`, PMCID: `PMC125750`.
+4. Pham CTN, Ivanovich JL, Raptis SZ, Zehnbauer B, Ley TJ. Papillon-Lefèvre syndrome: correlating the molecular, cellular, and clinical consequences of cathepsin C/dipeptidyl peptidase I deficiency in humans. *J Immunol*. 2004. PMID: `15585850`.
+5. Moghaddasian M, Arab H, Dadkhah E, et al. Protein modeling of cathepsin C mutations found in Papillon-Lefèvre syndrome. *Gene*. 2014. PMID: `24374475`.
+6. Nagy N, Vályi P, Csoma Z, et al. *CTSC* and Papillon-Lefèvre syndrome: detection of recurrent mutations in Hungarian patients, a review of published variants and database update. *Mol Genet Genomic Med*. 2014. PMID: `24936511`, PMCID: `PMC4049362`.
+7. Hamon Y, Legowska M, Fergelot P, et al. Processing and maturation of cathepsin C zymogen: a biochemical and molecular modeling analysis. *Int J Mol Sci*. 2019. PMID: `31557781`, PMCID: `PMC6801622`.
+8. Sabry S, Abouzaid MR, Mostafa MI, et al. Abnormal profiles of cathepsin C secreted in urine of Papillon-Lefèvre syndrome patients. *Eur J Med Genet*. 2022. PMID: `36058494`.
+9. Abdel-Hamid MS, et al. Papillon-Lefèvre syndrome in twelve Egyptian patients: five novel *CTSC* variants and functional characterization of a missense variant and its effect on splicing. *Arch Oral Biol*. 2024. PMID: `38104461`.
+10. Chitsamankhun C, et al. Cathepsin C in health and disease: from structural insights to therapeutic prospects. *J Transl Med*. 2024. PMID: `39164687`, PMCID: `PMC11337848`.
+11. Dieckhaus H, Brocidiacono M, Randolph NZ, Kuhlman B. Transfer learning to leverage larger datasets for improved prediction of protein stability changes. *Proc Natl Acad Sci U S A*. 2024;121(6):e2314853121. doi:10.1073/pnas.2314853121.
+
