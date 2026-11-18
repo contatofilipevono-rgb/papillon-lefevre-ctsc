@@ -1,0 +1,7 @@
+﻿variante,referencia,ensaio,desfecho,perda_funcao,na_1k3b,ddg_1k3b,ddg_af,dist_sitio_ativo,regra_c1_5,regra_c2_25,alphamissense
+L172P,Hamon et al. 2019 (PMC6801622),expressao recombinante,perda de processamento e atividade DPPI,sim,nao,,,,fora_1k3b,fora_1k3b,
+Q252L,Pham et al. 2004 (PMID 15585850),leucocitos / PMNs,ausencia de atividade DPPI,sim,sim,2.212,2.654,3.13,sim,sim,0.8691
+A253T,Abdel-Hamid et al. 2024 (PMID 38104461),splicing (minigene/RNA),altera splicing (exon skipping),sim,sim,-0.43,-0.21,7.52,nao,nao,0.0986
+R272P,Pham et al. 2004 (PMID 15585850),leucocitos / PMNs,ausencia de atividade DPPI,sim,sim,3.632,3.741,13.25,sim,sim,0.9806
+G301S,Pham et al. 2004 (PMID 15585850),leucocitos / PMNs,ausencia de atividade DPPI,sim,sim,3.076,3.29,6.02,sim,sim,0.6096
+Y347C,Pham et al. 2004 (PMID 15585850),leucocitos / PMNs,ausencia de atividade DPPI,sim,sim,2.865,3.089,11.69,sim,sim,0.665

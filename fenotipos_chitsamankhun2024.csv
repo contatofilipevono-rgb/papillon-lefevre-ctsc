@@ -1,0 +1,63 @@
+﻿variante,fenotipo,heranca,ddg_1k3b,dist_sitio_ativo,dissulfeto,regra_c1_5,regra_c2_25,alphamissense
+W39S,PLS,homo,3.222,24.91,nao,sim,sim,0.9571
+W39C,PLS,homo,2.161,24.91,nao,sim,nao,0.9924
+L68R,PLS,cpd het (c.458C > T),1.967,25.46,nao,sim,nao,0.9112
+L68R,PLS,homo,1.967,25.46,nao,sim,nao,0.9112
+W101S,Periodontite_agressiva,homo,2.371,21.96,nao,sim,sim,0.8759
+H127P,PLS,cpd het (c.96 T > G),0.128,21.75,nao,nao,nao,0.967
+R132G,PLS,homo,0.866,27.5,nao,sim,sim,0.1686
+R132G,PLS,homo,0.866,27.5,nao,sim,sim,0.1686
+G139R,PLS,cpd het (c.1141del),2.93,27.47,nao,sim,sim,0.9358
+G139R,PLS,cpd het (c.778 T > C),2.93,27.47,nao,sim,sim,0.9358
+G139R,PLS,cpd het (c.72C > A),2.93,27.47,nao,sim,sim,0.9358
+D236Y,PLS,cpd het (c.872G > A),2.008,11.55,nao,sim,nao,0.801
+N239S,PLS,cpd het (c.757 + 1G > A),0.645,14.67,nao,nao,nao,0.0948
+S247R,PLS,cpd het (c.1131 T > G),1.015,7.98,nao,nao,nao,0.9465
+V249F,PLS,homo,1.826,3.92,nao,sim,sim,0.765
+Q252L,PLS,homo,2.212,3.13,nao,sim,sim,0.8691
+C255S,PLS,cpd het (c.118del/ c.941 T > C),0.992,4.7,sim,sim,sim,0.9817
+C255R,PLS,cpd het (c.1015C > A),1.796,4.7,sim,sim,sim,0.9712
+Y259C,PLS,cpd het (c.145C > T),1.488,1.33,nao,sim,sim,0.8442
+S260P,PLS,cpd het (c.415G > A),1.514,3.12,nao,sim,sim,0.7237
+L267P,PLS,cpd het (c.1015C > T),3.875,10.76,nao,sim,sim,0.9429
+E268K,PLS,cpd het (c.901G > A),1.057,9.91,nao,nao,nao,0.9327
+R272P,PLS,cpd het (c.1141del),3.632,13.25,nao,sim,sim,0.9806
+R272P,PLS,homo,3.632,13.25,nao,sim,sim,0.9806
+R272P,PLS,homo,3.632,13.25,nao,sim,sim,0.9806
+R272H,PLS,cpd het (c.1235A > G),2.533,13.25,nao,sim,sim,0.1979
+T275I,PLS,cpd het (c.1040A > G),1.726,21.0,nao,sim,sim,0.8375
+S284N,PLS,cpd het (c.113_116del),1.626,10.38,nao,sim,nao,0.9616
+P285L,PLS,homo,0.84,7.49,nao,nao,nao,0.264
+Q286R,PLS,homo,2.08,9.85,nao,sim,nao,0.7714
+C291Y,PLS,cpd het (c.706G > T),-0.56,13.76,sim,sim,sim,0.9484
+Y294H,PLS,homo,1.806,11.81,nao,sim,nao,0.8794
+G300S,PLS,cpd het (c.1340A > G),1.39,6.21,nao,nao,nao,0.5572
+G300D,PLS,homo,1.356,6.21,nao,nao,nao,0.8435
+G301S,PLS,homo,3.076,6.02,nao,sim,sim,0.6096
+G301S,PLS,cpd het (c.802G > A),3.076,6.02,nao,sim,sim,0.6096
+G301V,PLS,homo,3.048,6.02,nao,sim,sim,0.9164
+Y304N,PLS,homo,2.758,9.84,nao,sim,sim,0.67
+G308E,PLS,cpd het (c.890G > T),2.563,11.75,nao,sim,sim,0.9665
+Q312R,PLS,homo,0.45,16.23,nao,sim,sim,0.1897
+F314S,PLS,cpd het (c.118del / c.763A > T),1.323,17.61,nao,nao,nao,0.3241
+L316P,PLS,homo,3.244,11.81,nao,sim,sim,0.827
+L316R,PLS,cpd het (c.1268G > C),2.725,11.81,nao,sim,sim,0.7004
+E319G,PLS,homo,2.393,12.36,nao,sim,sim,0.5721
+C337S,PLS,homo,1.173,20.93,sim,sim,sim,0.5317
+R339C,PLS,homo,1.08,16.64,nao,sim,sim,0.137
+R339C,PLS,cpd het (c.800 T > C),1.08,16.64,nao,sim,sim,0.137
+R339S,PLS,cpd het (c.763 T > C),1.625,16.64,nao,sim,sim,0.3315
+Y340C,PLS,homo,0.999,16.32,nao,nao,nao,0.1664
+Y347C,PLS,homo,2.865,11.69,nao,sim,sim,0.665
+Y347C,PLS,cpd het (c.824C > T),2.865,11.69,nao,sim,sim,0.665
+Y347C,PLS,cpd het (c.754C > T),2.865,11.69,nao,sim,sim,0.665
+G386R,PLS,cpd het (exons 3–7 deletion),2.417,11.66,nao,sim,sim,0.8822
+H405N,PLS,homo,1.849,0.0,nao,sim,sim,0.9724
+H405R,PLS,homo,1.591,0.0,nao,sim,sim,0.9519
+Y412C,PLS,cpd (c.815G > A),2.96,13.26,nao,sim,sim,0.6148
+W423S,PLS,cpd het (c.947 T > G),3.535,10.0,nao,sim,sim,0.9534
+W429C,PLS,cpd het (c.1056del),1.238,3.25,nao,sim,sim,0.9877
+D446A,PLS,homo,0.439,11.39,nao,nao,nao,0.7731
+E447G,PLS,homo,1.413,9.44,nao,nao,nao,0.7288
+E447G,PLS,cpd het (c.898G > A),1.413,9.44,nao,nao,nao,0.7288
+G297V,PLS,cpd het (c.923G > A),2.181,6.76,nao,sim,nao,0.8531
