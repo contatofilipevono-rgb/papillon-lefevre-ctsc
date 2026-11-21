@@ -1,0 +1,642 @@
+"""Gera o pacote completo de submissão e preprint (bioRxiv/medRxiv e revista) em papillon-lefevre/submissao/:
+  - manuscript.md (e atualiza ../manuscrito.md e ../revisao_literatura.md com referências 100% verificadas no PubMed)
+  - manuscript.docx (Word formatado, Times New Roman 12pt, espaçamento 1,5, tabelas acadêmicas)
+  - manuscript.pdf (PDF limpo do manuscrito)
+  - manuscript_with_figures_preview.pdf (PDF completo com Figuras 1–5 embutidas ao final — pronto para bioRxiv/medRxiv)
+  - tables.docx (Tabelas 1–4 separadas)
+  - supplementary.xlsx (planilha suplementar com 5 abas)
+  - cover_letter.docx e cover_letter.pdf
+  - figuras/ (TIFF 600 dpi LZW + PDF)
+
+Uso: py -I -X utf8 gerar_pacote_submissao.py <pasta_papillon_lefevre>
+"""
+import base64
+import csv
+import html
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import docx
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+from docx.shared import Inches, Pt
+import openpyxl
+from PIL import Image
+
+
+EDGE_PATHS = [
+    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+]
+
+
+def find_edge():
+    for p in EDGE_PATHS:
+        if os.path.exists(p):
+            return p
+    raise RuntimeError("Microsoft Edge não encontrado")
+
+
+def ler_csv(p):
+    with open(p, encoding="utf-8-sig") as f:
+        return list(csv.DictReader(f))
+
+
+def build_manuscript_md(base: Path) -> str:
+    var_rows = ler_csv(base / "variantes_CTSC.csv")
+    P_1k = [r for r in var_rows if r["coorte_patogenica"] in ("calibracao", "teste_externo") and r["na_1k3b"] == "sim"]
+
+    # Table 1: All 51 pathogenic variants in 1K3B
+    t1_lines = [
+        "| Variant | Domain | Cohort (Source) | ClinVar ID | Triad dist., Å | Tetramer dist., Å | Disulfide | ThermoMPNN ΔΔG, kcal/mol | AlphaMissense | gnomAD AC (Hom) | Primary mechanism |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
+    ]
+    for r in P_1k:
+        src = "ClinVar P/LP" if r["rotulo"] == "P" else f"P-lit ({r['literatura_ano'] or 'PMC'})"
+        coh = "Calibration" if r["coorte_patogenica"] == "calibracao" else "External (>2015)"
+        cid = r["clinvar_ids"].split()[0] if r["clinvar_ids"] else "—"
+        da = float(r["dist_sitio_ativo"])
+        dt = float(r["dist_interface_tetramero"])
+        ddg = float(r["ddg_1k3b"])
+        dis = "Yes" if r["dissulfeto"] == "sim" else "No"
+        ac = r["gnomad_ac"] or "0"
+        hom = r["gnomad_hom"] or "0"
+        if da < 4.0:
+            mec = "Catalytic triad (<4 Å)"
+        elif dis == "Yes":
+            mec = "Disulfide bond"
+        elif ddg >= 2.25:
+            mec = "Destabilizing (ΔΔG ≥ 2.25)"
+        elif ddg >= 1.5:
+            mec = "Moderate destab. (1.5–2.25)"
+        elif dt < 4.0:
+            mec = "Tetramer interface (<4 Å)"
+        else:
+            mec = "Unclassified"
+        t1_lines.append(
+            f"| {r['variante']} | {r['dominio']} | {coh} ({src}) | {cid} | {da:.2f} | {dt:.2f} | {dis} | {ddg:.2f} | {float(r['alphamissense']):.4f} | {ac} ({hom}) | {mec} |"
+        )
+    table1_md = "\n".join(t1_lines)
+
+    # Table 2: Case-control comparison
+    table2_md = "\n".join([
+        "| Group / Predictor | Pathogenic in 1K3B (n = 51) | gnomAD AC ≥ 2 controls (n = 234) | gnomAD Homozygotes (n = 4) | Effect size / Discrimination | Two-sided *p*-value |",
+        "|---|---|---|---|---|---|",
+        "| **Continuous predictors (median)** | | | | | |",
+        "| ThermoMPNN ΔΔG (1K3B), kcal/mol | 1.796 | 0.762 | 0.065 (−0.138 to 0.289) | AUC = 0.740 (95% CI 0.657–0.813) | 8.33×10⁻⁸ |",
+        "| ThermoMPNN ΔΔG (AF-P53634), kcal/mol | 1.910 | 0.919 | 0.210 | AUC = 0.741 (95% CI 0.656–0.817) | 6.83×10⁻⁸ |",
+        "| Propeptide ΔΔG (AF-P53634, n = 3 vs 62) | 2.352 | 0.397 | 0.142 (I153T) | AUC = 0.946 | 3.07×10⁻³ |",
+        "| AlphaMissense score | 0.853 | 0.208 | 0.074 (0.053–0.107) | AUC = 0.819 (95% CI 0.753–0.877) | 8.94×10⁻¹³ |",
+        "| ESM-1b score (dbNSFP subset, n = 30 vs 233) | −11.45 | −6.12 | −4.85 | AUC = 0.820 | 1.21×10⁻⁸ |",
+        "| REVEL score (dbNSFP subset, n = 30 vs 233) | 0.798 | 0.371 | 0.184 | AUC = 0.801 | 8.37×10⁻⁸ |",
+        "| MetaRNN score (dbNSFP subset, n = 30 vs 233) | 0.812 | 0.315 | 0.112 | AUC = 0.790 | 2.31×10⁻⁷ |",
+        "| CADD phred (dbNSFP subset, n = 30 vs 233) | 28.4 | 22.7 | 16.2 | AUC = 0.783 | 4.43×10⁻⁷ |",
+        "| Relative solvent accessibility (RSA) | 0.000 | 0.006 | 0.042 | AUC = 0.383 (0.314–0.459) | 5.92×10⁻³ |",
+        "| **Binary structural mechanisms, n (%)** | | | | | |",
+        "| Destabilization (ΔΔG ≥ 1.5 kcal/mol) | 31 (60.8%) | 62 (26.5%) | 0 (0.0%) | OR = 4.30 | 5.37×10⁻⁶ |",
+        "| Catalytic triad proximity (< 4.0 Å) | 8 (15.7%) | 9 (3.8%) | 0 (0.0%) | OR = 4.65 | 4.14×10⁻³ |",
+        "| Disulfide bond cysteine | 5 (9.8%) | 5 (2.1%) | 0 (0.0%) | OR = 4.98 | 0.0188 |",
+        "| Tetramer interface proximity (< 4.0 Å) | 6 (11.8%) | 27 (11.5%) | 1 (25.0%, L71M) | OR = 1.02 (Negative) | 1.00 |",
+        "| Exclusion–catalytic interface (< 4.0 Å) | 9 (17.6%) | 32 (13.7%) | 0 (0.0%) | OR = 1.35 (Negative) | 0.509 |",
+        "| S2 pocket Asp25 proximity (< 6.0 Å) | 3 (5.9%) | 11 (4.7%) | 0 (0.0%) | OR = 1.27 (Continuous MW p = 0.0179) | 0.722 |",
+        "| Chloride ion proximity (< 5.0 Å) | 2 (3.9%) | 7 (3.0%) | 0 (0.0%) | OR = 1.32 (Negative) | 0.665 |",
+        "| N-glycosylation site | 0 (0.0%) | 1 (0.4%) | 0 (0.0%) | Negative | 1.00 |",
+    ])
+
+    # Table 3: Functional & validation summary
+    table3_md = "\n".join([
+        "| Cohort / Functional Benchmark | Sample size | Rule-positive / Concordant | Sensitivity or Specificity (Wilson 95% CI) | Likelihood Ratios / Notes |",
+        "|---|---|---|---|---|",
+        "| **Panel A. Pre-registered rule validation (LOO cut-off c = 2.25 kcal/mol)** | | | | |",
+        "| Calibration set (LOO: ClinVar P + P-lit ≤ 2015, 4-term rule) | n = 20 | 15 / 20 | Sensitivity: 75.0% (53.1%–88.8%) | LR+ = 2.93 (2.06–4.05); LR− = 0.34 (0.13–0.61) |",
+        "| Recurrent controls (gnomAD AC ≥ 2, 4-term rule) | n = 234 | 174 / 234 neg. | Specificity: 74.4% (68.4%–79.5%) | Calibration control set |",
+        "| Independent external test (P-lit > 2015, 4-term rule) | n = 31 | 18 / 31 | Sensitivity: 58.1% (40.8%–73.6%) | Out-of-sample temporal generalization |",
+        "| Homozygous controls (gnomAD hom ≥ 1, 4-term / 2-term rule) | n = 4 | 3 / 4 neg. (4 / 4 two-term) | Specificity: 75.0% (30.1%–95.4%) / 100.0% (51.0%–100.0%) | L71M is 3.57 Å from tetramer interface (ΔΔG = 0.19) |",
+        "| **Panel B. Experimental functional benchmarks** | | | | |",
+        "| Q252L (Pham et al. 2004, PMN leukocyte DPPI activity lost) | 1K3B heavy chain | Positive (3.13 Å; ΔΔG = 2.21) | Concordant (catalytic triad + destabilizing) | AlphaMissense = 0.9859 |",
+        "| R272P (Pham et al. 2004, PMN leukocyte DPPI activity lost) | 1K3B heavy chain | Positive (13.25 Å; ΔΔG = 3.63) | Concordant (severe core destabilization) | AlphaMissense = 0.9965 |",
+        "| G301S (Pham et al. 2004, PMN leukocyte DPPI activity lost) | 1K3B heavy chain | Positive (6.02 Å; ΔΔG = 3.08) | Concordant (severe core destabilization) | AlphaMissense = 0.9936 |",
+        "| Y347C (Pham et al. 2004, PMN leukocyte DPPI activity lost) | 1K3B heavy chain | Positive (11.69 Å; ΔΔG = 2.87) | Concordant (severe core destabilization) | AlphaMissense = 0.9803 |",
+        "| A253T (c.757G>A; Abdel-Hamid et al. 2024, exon skipping) | 1K3B heavy chain | Protein rule negative (ΔΔG = −0.43) | Rescued by AlphaGenome v2 (SPLICE_SITES = 0.8589) | Mechanistic dissociation: exonic splicing defect |",
+    ])
+
+    # Table 4: VUS decomposition & Top non-coding AlphaGenome v2 candidates
+    ag_rows = ler_csv(base / "alphagenome_nao_codificantes.csv")
+    ag_u = sorted([r for r in ag_rows if r["grupo"] == "U"], key=lambda x: -float(x["max_splice_sites_q"] or 0))[:10]
+    t4_lines = [
+        "| Subgroup / Variant | ClinVar ID / gnomAD Status | Metric 1 (Rule-positive or K562 Splice) | Metric 2 (Wilson 95% CI or HL-60 / Fibroblast Splice) | Metric 3 (K562 RNA-seq / Notes) |",
+        "|---|---|---|---|---|",
+        "| **Part A. Disjoint missense VUS (group U, n = 569 in 1K3B) under ΔΔG ≥ 1.5 kcal/mol** | | | | |",
+        "| Absent from gnomAD v4.1 (AC = 0) | n = 110 (independent of controls) | 49 / 110 (44.5%) | 95% CI: 35.6%–53.9% | Enriched over recurrent controls (26.5% at ΔΔG ≥ 1.5) |",
+        "| Singleton gnomAD v4.1 (AC = 1, hom = 0) | n = 230 (outside AC ≥ 2 calibration) | 98 / 230 (42.6%) | 95% CI: 36.4%–49.1% | Rare carrier alleles in recessive disease |",
+        "| Recurrent gnomAD v4.1 (AC ≥ 2) | n = 229 (overlaps AC ≥ 2 controls) | 95 / 229 (41.5%) | 95% CI: 35.3%–48.0% | Overlaps calibration control set by construction |",
+        "| **Part B. Top 10 non-coding ClinVar group-U variants prioritized by AlphaGenome v2** | | | | |",
+    ]
+    for r in ag_u:
+        t4_lines.append(
+            f"| {r['title']} | {r['accession']} ({r['classificacao'] or 'Unclassified'}) | K562: {float(r['k562_mieloide_splice_sites_q']):.4f} | HL-60: {float(r['hl60_promielocito_splice_sites_q']):.4f} / Fib: {float(r['fibroblasto_pele_splice_sites_q']):.4f} | RNA-seq max: {float(r['max_rna_seq_q']):.4f} |"
+        )
+    table4_md = "\n".join(t4_lines)
+
+    md = f"""# Structural Mechanisms of Pathogenic *CTSC* Variants in Papillon-Lefèvre Syndrome: A Pre-Registered Crystal-Structure, ThermoMPNN, and AlphaGenome Study
+
+**Running title:** Structural mechanisms of *CTSC* variants in PLS
+
+**Filipe Martins Vono**$^{{1,*}}$, **Valeria Gonzaga Santos**$^{{2}}$, **Andre Naufel de Toledo**$^{{1}}$
+
+$^{{1}}$School of Dentistry, Centro Universitário de Belo Horizonte (UniBH), Belo Horizonte, Minas Gerais, Brazil  
+$^{{2}}$American Global Tech University, Orlando, Florida, USA
+
+$^{{*}}$**Correspondence:**  
+Filipe Martins Vono, Centro Universitário de Belo Horizonte (UniBH), Belo Horizonte, Minas Gerais, Brazil.  
+Email: contatofilipevono@gmail.com  
+ORCID: Filipe Martins Vono (`0009-0009-4994-8533`); Valeria Gonzaga Santos (`0009-0009-1333-2518`); Andre Naufel de Toledo (`0000-0002-0619-6820`)
+
+---
+
+## Abstract
+
+**Background:** Loss-of-function variants in *CTSC* (encoding cathepsin C / dipeptidyl peptidase I, DPPI) cause Papillon-Lefèvre syndrome (PLS), Haim-Munk syndrome, and nonsyndromic aggressive periodontitis. While isolated case reports have modelled individual mutations, no systematic study has evaluated structural mechanisms against recessive population controls with pre-registered thresholds and independent external validation.
+
+**Methods:** We consolidated 832 *CTSC* missense variants from ClinVar, gnomAD v4.1 (including homozygote counts), AlphaMissense, and curated literature (`n = 51` pathogenic variants in the mature enzyme; `20` pre-2016 calibration, `31` post-2015 external test). Using the experimental human DPPI tetramer crystal structure (PDB `1K3B`, 2.15 Å) and ThermoMPNN saturation mutagenesis (`ΔΔG`), we pre-registered distance and stability cut-offs before comparing pathogenic variants against gnomAD `AC ≥ 2` (`n = 234`) and homozygous (`homozygote_count ≥ 1`, `n = 4`) controls. Non-coding ClinVar variants (`n = 152`) were scored with AlphaGenome v2 across myeloid (`K562`, `HL-60`) and dermal fibroblast conditions.
+
+**Results:** Pathogenic *CTSC* missense variants were strongly destabilizing compared to `AC ≥ 2` controls (median `ΔΔG` `1.796` vs. `0.762 kcal/mol`; `AUC = 0.740`, 95% CI `0.657–0.813`, `p = 8.33 × 10⁻⁸`), including propeptide variants resolved in AlphaFold DB (`AUC = 0.946`, `p = 3.07 × 10⁻³`), and enriched near the catalytic triad (`< 4.0 Å`: `15.7%` vs. `3.8%`, `p = 4.14 × 10⁻³`) and disulfide bonds (`9.8%` vs. `2.1%`, `p = 0.0188`). Conversely, tetramer interface proximity (`p = 1.00`), exclusion–catalytic interface (`p = 0.509`), chloride ion proximity (`p = 0.665`), and N-glycosylation (`p = 1.00`) did not discriminate groups. Sequence/ensemble predictors achieved `AUC` values of `0.820` (ESM-1b), `0.819` (AlphaMissense), `0.801` (REVEL), `0.790` (MetaRNN), and `0.783` (CADD). In nested leave-one-out calibration (`c = 2.25 kcal/mol`), the four-term structural rule achieved `75.0%` sensitivity (`15/20`) and `74.4%` specificity (`174/234`), dropping to `58.1%` (`18/31`, 95% CI `40.8%–73.6%`) on the independent post-2015 external test set and `75.0%` (`3/4`) on homozygous controls (`4/4 = 100%` for the two-term catalytic/stability rule). Functional validation confirmed `4/4` leukocyte DPPI-deficient mutants (`Q252L`, `R272P`, `G301S`, `Y347C`), whereas the exonic splicing mutant `A253T` (`ΔΔG = −0.43 kcal/mol`) was negative by protein structure yet strongly flagged by AlphaGenome v2 (`SPLICE_SITES = 0.8589`). Across `152` non-coding variants, AlphaGenome v2 separated pathogenic from benign variants with `AUC = 1.000` for splicing (`p = 1.55 × 10⁻⁸`) and `0.953–0.967` for RNA-seq across all three cell lineages.
+
+**Conclusions:** Thermodynamic destabilization and catalytic triad disruption account for most pathogenic missense *CTSC* variants, while exonic splicing variants require complementary nucleotide-level models. Pre-registration and independent post-2015 testing reveal realistic generalization bounds (`75.0%` vs. `58.1%`) that prevent overoptimistic classification claims.
+
+**Keywords:** Cathepsin C; Dipeptidyl Peptidase I; Mutation, Missense; Papillon-Lefevre Disease; Periodontitis, Aggressive; Protein Stability
+
+---
+
+## 1. Introduction
+
+Papillon-Lefèvre syndrome (PLS; OMIM #245000) is a rare autosomal recessive genodermatosis characterized by severe early-onset periodontitis affecting both primary and permanent dentitions, accompanied by palmoplantar keratoderma (1, 2). Biallelic loss-of-function variants in *CTSC* (chromosome 11q14.2), which encodes the lysosomal cysteine exopeptidase cathepsin C (dipeptidyl peptidase I, DPPI; UniProt `P53634`, 463 amino acids), cause PLS as well as the allelic Haim-Munk syndrome and nonsyndromic prepubertal or aggressive periodontitis (1, 2, 6). Mature human DPPI is a ~200 kDa homotetramer in which each monomer comprises an N-terminal exclusion domain (`Asp25–Glu134`, retained up to `Leu143` in crystal coordinates), a heavy chain (`Leu231–Arg394`), and a light chain (`Asp395–Leu463`) generated by proteolytic excision of the signal peptide (`1–24`) and activation propeptide (`135–230`) (3, 7). The papain-like fold harbours a catalytic triad (`Cys258`, `His405`, `Asn427`), five intrachain/interchain disulfide bridges (`Cys30–Cys118`, `Cys54–Cys136`, `Cys255–Cys298`, `Cys291–Cys331`, `Cys321–Cys337`), four N-linked glycosylation sites (`Asn29`, `Asn53`, `Asn119`, `Asn276`), a bound chloride ion at the floor of the active-site cleft, and the N-terminal carboxylic group of `Asp25`, which blocks endopeptidase activity and confers strict dipeptidyl aminopeptidase specificity (3). Because DPPI is essential for N-terminal processing and activation of granule-associated neutrophil serine proteases (neutrophil elastase, cathepsin G, and proteinase 3), loss of DPPI activity impairs periodontal host defense and triggers destructive gingival inflammation (4, 10).
+
+Over 100 *CTSC* variants have been catalogued in variant databases and clinical reviews (6, 10), and non-invasive urinary profiling has confirmed that pathogenic *CTSC* alleles abolish secreted active DPPI chains in PLS patients (8). However, previous structural analyses of *CTSC* mutations have been limited to homology modelling of isolated case-report substitutions (5) or biochemical characterization of single zymogen-processing defects such as `L172P` (7) and exonic splicing lesions such as `A253T` (`c.757G>A`) (9). No systematic study has integrated the 2.15 Å experimental human DPPI tetramer structure (`1K3B`) (3) with deep-learning folding stability predictions (`ΔΔG`) from ThermoMPNN (13), proteome-wide language and structural models such as AlphaMissense (15) and ESM-1b, regulatory splicing and expression predictions from AlphaGenome (16), and recessive population controls from gnomAD v4 (14). Furthermore, computational variant studies frequently suffer from methodological circularity when decision thresholds are tuned *post hoc* on the full dataset, when cross-validation is conflated with external validation, or when population controls overlap with reclassified variants of uncertain significance (VUS).
+
+Here, we report a pre-registered computational investigation of *CTSC* missense and non-coding variants designed to overcome these limitations: (i) all distance thresholds, stability cut-offs, rule structures, and a temporal split separating pre-2016 calibration variants from an independent post-2015 external test cohort were committed to version control prior to case–control comparisons; (ii) recognizing the autosomal recessive inheritance of PLS, we benchmarked pathogenic variants against both homozygous gnomAD v4.1 controls (`homozygote_count ≥ 1`) and recurrent population controls (`AC ≥ 2`), while stratifying VUS into mutually disjoint population subgroups; and (iii) we paired 3D protein-level mechanics with nucleotide-level AlphaGenome v2 scoring across myeloid and dermal fibroblast conditions.
+
+---
+
+## 2. Materials and Methods
+
+### 2.1 Pre-registration and dataset independence
+All structural descriptors, candidate thresholds, decision rules, and cohort partitions were written and committed to version control (`PRE_REGISTRO.md`, commit `574901d`) prior to running any statistical comparison between pathogenic and control groups. Single-gene variant records for *CTSC* were retrieved from ClinVar via NCBI E-utilities (11) on 18 November 2026 (`522` total records; `153` non-coding GRCh38 SPDI entries). Population allele counts (`AC`), allele numbers (`AN`), allele frequencies (`AF`), and homozygote counts (`homozygote_count`) across combined exomes and genomes were queried via the gnomAD GraphQL API (`dataset: gnomad_r4`, canonical transcript `ENST00000227266`, maximum `AN = 1,614,196` corresponding to gnomAD v4.1; `3,456` total variants, `79` with `homozygote_count ≥ 1`) (14). Precomputed AlphaMissense scores (`8,797` single-amino-acid substitutions for `P53634`) were retrieved from AlphaFold Database proteome files (15). Additional ensemble and protein language model scores (`REVEL`, `CADD phred`, `ESM-1b`, `MetaRNN`) were queried via `myvariant.info` (`dbNSFP` GRCh38) for variants with exact genomic coordinates (`n = 264`). An attempted query of LOVD was blocked by IP restrictions and excluded.
+
+Literature-curated missense variants (`P-lit`) were extracted from full-text XML tables of Nagy et al. (6) (`PMC4049362`), Chitsamankhun et al. (10) (`PMC11337848`, 138-row summary table), and open-access post-2014 case reports in Europe PMC, verifying 100% wild-type amino-acid identity against UniProt `P53634`. Missense variants (excluding translation initiation `M1` substitutions, leaving `832` consolidated variants) were assigned non-overlapping labels: `P` for ClinVar Pathogenic/Likely pathogenic entries without conflict (`n = 18` total, `16` in `1K3B`); `P-lit` for literature-documented PLS/Haim-Munk/aggressive periodontitis missense variants with `gnomAD AF < 10⁻⁴` and no ClinVar conflict (`n = 35`, all `35` in `1K3B`); `B` for ClinVar Benign/Likely benign variants, `AF ≥ 10⁻³`, or `homozygote_count ≥ 1` without `P`/`P-lit` status (`n = 7` total, `5` in `1K3B`); and `U` for VUS, conflicting, or unclassified rare population variants (`n = 772` total, `569` in `1K3B`). To establish an independent external test cohort, all ClinVar `P` variants and `P-lit` variants first observed in publications up to 2015 (`n = 20` in `1K3B`) were assigned to the **calibration set**, whereas `P-lit` variants from post-2015 publications (`n = 31` in `1K3B`) were held out strictly as the **external test set**. Because heterozygous carriers of recessive pathogenic alleles occur in the general population, population controls excluded all `P`/`P-lit` alleles and were defined at two levels: a stringent **homozygous control set** (`homozygote_count ≥ 1`, `n = 4` in `1K3B`: `L71M`, `T233A`, `M420L`, `I453V`, plus propeptide `I153T`) and a **recurrent control set** (`AC ≥ 2`, `n = 234` in `1K3B`). Group-`U` VUS in `1K3B` (`n = 569`) were decomposed into three mutually disjoint subsets: gnomAD-absent (`AC = 0`, `n = 110`), gnomAD singletons (`AC = 1`, `n = 230`), and gnomAD recurrent (`AC ≥ 2`, `n = 229`, overlapping calibration controls).
+
+### 2.2 Experimental crystal structure and ThermoMPNN stability (`ΔΔG`)
+Structural coordinates were taken from the 2.15 Å human DPPI crystal structure (PDB `1K3B` and biological tetramer `1K3B-assembly1.cif`) (3). Across Chains A (`1–119`), B (`207–370`), and C (`371–439`), all `352` resolved residues per monomer mapped with 100% sequence identity to UniProt `P53634` via `uniprot_pos = auth_seq_id + 24` (`25–143`, `231–394`, and `395–463`). In the biological tetramer (`12` chains, `4` chloride ions), we computed per-residue minimum heavy-atom Euclidean distances to: (i) the catalytic triad (`Cys258`, `His405`, `Asn427`), (ii) any adjacent monomer in the tetramer (`dist_interface_tetramero`), (iii) the interface between the exclusion domain (Chain A) and catalytic chains (Chains B+C), (iv) the S2 pocket anchor `Asp25`, and (v) bound chloride ions (`CL`), alongside Shrake–Rupley relative solvent accessibility (`RSA`, normalized by Tien et al. maximum ASA) and annotations for disulfide-bonded cysteines and N-glycosylation sites.
+
+Site-saturation mutagenesis folding free-energy changes (`ΔΔG`, kcal/mol) were computed locally using ThermoMPNN (`thermoMPNN_default.pt`, PyTorch 2.5.1+cpu) (13) on the unified mature monomer (`1K3B_mature_chainA.pdb`, `7,040` predictions, verifying zero mismatches against `P53634` via `uniprot_pos = position + 25`) and on the full-length AlphaFold Database monomer (`AF-P53634-F1.pdb`, `9,260` predictions, covering propeptide residues `135–230`). Positive `ΔΔG` values indicate destabilizing mutations (13).
+
+### 2.3 Pre-registered rules, cross-validation, and statistical analysis
+Two decision rules were pre-registered: (i) a **primary four-term structural rule**, classifying a variant as positive if `dist_sitio_ativo < 4.0 Å` OR `dist_interface_tetramero < 4.0 Å` OR `dissulfeto == "sim"` OR `ΔΔG ≥ c`; and (ii) a **secondary minimalist two-term rule** (`dist_sitio_ativo < 4.0 Å` OR `ΔΔG ≥ c`). Within the calibration set (`20` pathogenic vs. `234` `AC ≥ 2` controls), nested leave-one-out cross-validation (LOOCV; `254` folds) selected `c` across `{{0.00, 0.25, …, 3.00}}` kcal/mol by maximizing Youden's index (`J = sensitivity + specificity − 1`) on each 253-variant training split and evaluated the held-out variant. The modal threshold selected in calibration (`c = 2.25 kcal/mol`, alongside pre-registered sensitivity grid points `0.5, 1.0, 1.5, 2.0 kcal/mol`) was then applied without re-fitting to the independent post-2015 external test set (`n = 31`) and homozygous controls (`n = 4`). Continuous comparisons used two-sided `scipy.stats.mannwhitneyu` (with tie correction) and 2,000-replicate bootstrap 95% CIs for ROC AUC; categorical comparisons used two-sided Fisher's exact tests (`scipy.stats.fisher_exact`), Wilson score 95% CIs for proportions, and 2,000-replicate bootstrap 95% CIs for likelihood ratios (`LR+`, `LR−`) (17, 18).
+
+### 2.4 Non-coding and exonic-splicing evaluation with AlphaGenome v2
+Wild-type *CTSC* (`chr11:88291570–88337763`, GRCh38) RNA-seq expression (99th percentile across tracks in a 100 kb window) was benchmarked against *GAPDH* and *ALB* across five supported ontology conditions in AlphaGenome v2 (`alphagenome` v2.0.0) (16): myeloid `K562` (`EFO:0002067`, observed tracks), promyelocytic `HL-60` (`EFO:0002793`), dermal fibroblast (`CL:0011022`, observed RNA-seq), suprapubic skin (`UBERON:0036149`), and palmar skin (`UBERON:0013777`). `K562` (*CTSC* p99 = `9.7511` vs. *ALB* `0.0600`, `162.5× ALB`) was selected as primary, with `HL-60` (`159.7× ALB`) and dermal fibroblast (`39.5× ALB`) as sensitivity conditions (elevated *ALB* background in bulk skin tissues `1.02–2.21` precluded ratio normalization). All `152` non-coding ClinVar SNVs/indels (`12` Pathogenic/Likely pathogenic, `105` Benign/Likely benign, `35` group `U`), the experimentally characterized exonic splicing variant `A253T` (`chr11:88300530C>T`, `c.757G>A`) (9), and six rule-negative post-2015 external-test missense variants with GRCh38 gnomAD coordinates (`W39C`, `S284N`, `P285L`, `G297V`, `Y340C`, `D446A`) were scored in a 1 Mb window using gene-restricted `SPLICE_SITES`, `SPLICE_SITE_USAGE`, `SPLICE_JUNCTIONS`, and `RNA_SEQ` scorers. Ensembl VEP REST queries for precomputed SpliceAI scores timed out from the local network and were recorded as not executed.
+
+---
+
+## 3. Results
+
+### 3.1 Thermodynamic destabilization and catalytic proximity drive *CTSC* pathogenicity
+Across all `51` pathogenic missense variants mapped to `1K3B` (**Table 1**) versus `234` recurrent `gnomAD AC ≥ 2` controls (**Table 2**, **Fig. 1–3**), predicted thermodynamic destabilization was markedly elevated on both the experimental crystal monomer (ThermoMPNN `ΔΔG` median `1.796` vs. `0.762 kcal/mol`; `AUC = 0.740`, 95% CI `0.657–0.813`, `p = 8.33 × 10⁻⁸`) and the AlphaFold DB full-length monomer (`1.910` vs. `0.919 kcal/mol`; `AUC = 0.741`, 95% CI `0.656–0.817`, `p = 6.83 × 10⁻⁸`). Within the activation propeptide (`135–230`, absent from mature `1K3B` but resolved in `AF-P53634-F1`), the three curated pathogenic substitutions (`G139R` `3.115`, `Y168C` `2.352`, `L196P` `2.065 kcal/mol`) also showed strong destabilization compared with `62` `AC ≥ 2` propeptide controls (median `2.352` vs. `0.397 kcal/mol`; `AUC = 0.946`, `p = 3.07 × 10⁻³`), rescuing `Y168C` where AlphaMissense scored `0.2299`.
+
+**Table 1.** Curated pathogenic *CTSC* missense variants resolved in the human DPPI crystal structure (PDB `1K3B`, `n = 51`), structural descriptors, and primary predicted mechanism.
+
+{table1_md}
+
+Pathogenic variants in `1K3B` were significantly more buried in the tetramer than population controls (`RSA` median `0.000` vs. `0.006`; `AUC = 0.383`, `p = 5.92 × 10⁻³`) and showed strong binary enrichment across three structural mechanisms (**Table 2**): core destabilization with `ΔΔG ≥ 1.5 kcal/mol` (`31/51 = 60.8%` vs. `62/234 = 26.5%`, Fisher `p = 5.37 × 10⁻⁶`), direct proximity `< 4.0 Å` to the catalytic triad `Cys258`/`His405`/`Asn427` (`8/51 = 15.7%` vs. `9/234 = 3.8%`, `p = 4.14 × 10⁻³`), and disruption of disulfide-bonded cysteines (`5/51 = 9.8%` vs. `5/234 = 2.1%`, `p = 0.0188`). Conversely, five spatial features showed no binary case–control enrichment (**Table 2**): tetramer interface proximity `< 4.0 Å` (`11.8%` vs. `11.5%`, `p = 1.00`), exclusion-domain to catalytic-chain interface `< 4.0 Å` (`17.6%` vs. `13.7%`, `p = 0.509`), S2 pocket anchor `Asp25` proximity `< 6.0 Å` (`5.9%` vs. `4.7%`, `p = 0.722`, despite a modest continuous distance shift, Mann–Whitney `p = 0.0179`), chloride ion proximity `< 5.0 Å` (`3.9%` vs. `3.0%`, `p = 0.665`), and N-glycosylation sites (`0.0%` vs. `0.4%`, `p = 1.00`). Against sequence, language-model, and ensemble comparators (**Table 2**, **Fig. 3B–C**), AlphaMissense achieved `AUC = 0.819` (`0.853` vs. `0.208`, `p = 8.94 × 10⁻¹³` on the full `51 vs. 234` set)—without the control score saturation observed in transcription factor domains—while on the GRCh38 `dbNSFP`-annotated subset (`30` pathogenic vs. `233` controls), zero-shot `ESM-1b` achieved `AUC = 0.820` (`p = 1.21 × 10⁻⁸`), `REVEL` `0.801` (`p = 8.37 × 10⁻⁸`), `MetaRNN` `0.790` (`p = 2.31 × 10⁻⁷`), and `CADD phred` `0.783` (`p = 4.43 × 10⁻⁷`).
+
+**Table 2.** Case–control comparison of continuous predictors and binary structural mechanisms between pathogenic *CTSC* missense variants (`n = 51`) and gnomAD v4.1 population controls (`AC ≥ 2`, `n = 234`; homozygotes, `n = 4`).
+
+{table2_md}
+
+### 3.2 Nested cross-validation, independent post-2015 external test, and homozygous controls
+In nested LOOCV on the calibration cohort (`20` pathogenic vs. `234` `AC ≥ 2` controls), maximizing Youden's index selected a modal threshold of `ΔΔG ≥ 2.25 kcal/mol` (range `2.25–2.75 kcal/mol` across folds) for both the primary four-term rule and the minimalist two-term rule (**Table 3**, **Fig. 4A**). Out-of-fold LOOCV performance for the four-term rule was `75.0%` sensitivity (`15/20`, Wilson 95% CI `53.1%–88.8%`), `74.4%` specificity (`174/234`, 95% CI `68.4%–79.5%`), `LR+ = 2.93` (bootstrap 95% CI `2.06–4.05`), and `LR− = 0.34` (`0.13–0.61`). For the two-term rule (`dist_sitio_ativo < 4.0 Å` OR `ΔΔG ≥ 2.25 kcal/mol`), LOOCV specificity rose to `87.2%` (`204/234`, 95% CI `82.3%–90.9%`; `LR+ = 4.29`, 95% CI `2.44–7.12`) at `55.0%` sensitivity (`11/20`).
+
+When locked at `c = 2.25 kcal/mol` and evaluated on the independent post-2015 external test cohort (`n = 31`), sensitivity of the four-term rule was `58.1%` (`18/31`, Wilson 95% CI `40.8%–73.6%`), including two borderline destabilizing variants (`W39C` `ΔΔG = 2.16 kcal/mol` and `G297V` `2.18 kcal/mol`) that were positive at the pre-registered `1.5 kcal/mol` grid point (where overall sensitivity across all `51` pathogenic variants was `78.4%` [`40/51`] at `59.0%` [`138/234`] specificity, Fisher `p = 1.05 × 10⁻⁶`). Across the four homozygous gnomAD controls in `1K3B` (`L71M`, `T233A`, `M420L`, `I453V`), `ΔΔG` ranged from `−0.138` to `0.289 kcal/mol` and AlphaMissense from `0.0531` to `0.1065`; three of four (`75.0%`) were negative under the four-term rule and all four (`100.0%`, `4/4`) were negative under the two-term rule (`L71M` lies `3.57 Å` from the tetramer interface with `ΔΔG = 0.19 kcal/mol`).
+
+**Table 3.** Nested cross-validation, independent post-2015 external test, homozygous control specificity, and experimental functional concordance.
+
+{table3_md}
+
+### 3.3 Functional DPPI validation, phenotype comparison, and splicing rescue of `A253T`
+Comparing structural predictions against experimental DPPI enzymatic activity measurements in polymorphonuclear leukocytes from Pham et al. (4) confirmed `4/4` (`100%`) missense mutants resolved in `1K3B` (**Table 3, Panel B**): `Q252L` contacted the catalytic triad (`3.13 Å`, `ΔΔG = 2.21 kcal/mol`), while `R272P` (`3.63 kcal/mol`), `G301S` (`3.08 kcal/mol`), and `Y347C` (`2.87 kcal/mol`) caused severe core destabilization. Across clinical phenotype annotations extracted from Chitsamankhun et al. (10) (`62` entries mapped to `1K3B`), `49/61` (`80.3%`) classic PLS entries and `1/1` (`100%`, `W101S`) nonsyndromic aggressive periodontitis entry were positive at `ΔΔG ≥ 1.5 kcal/mol` (`41/61 = 67.2%` and `1/1 = 100%` at `2.25 kcal/mol`).
+
+By contrast, `A253T` (`c.757G>A`, last nucleotide of exon 5), proven by minigene and patient RNA assays to cause exon skipping (9), was completely benign at the 3D protein level (`ΔΔG = −0.43 kcal/mol` in `1K3B`, `−0.21 kcal/mol` in `AF-P53634`, `7.52 Å` from the catalytic triad) (**Fig. 2**). Scoring `A253T` with AlphaGenome v2 in `K562` myeloid cells immediately captured its pathogenic splicing disruption (`SPLICE_SITES raw_score = 0.8589`, `SPLICE_SITE_USAGE = 0.8645`, `SPLICE_JUNCTIONS = 7.0273`). Conversely, none of the six rule-negative post-2015 external-test missense variants with GRCh38 gnomAD coordinates (`W39C`, `S284N`, `P285L`, `G297V`, `Y340C`, `D446A`) showed strong AlphaGenome v2 splicing scores (`SPLICE_SITES raw_score = 0.0033–0.0642`), confirming that `A253T` represents a specific exonic-splicing outlier rather than a general explanation for rule-negative missense alleles.
+
+### 3.4 Disjoint VUS stratification and non-coding ClinVar evaluation with AlphaGenome v2
+Stratifying the `569` `1K3B` group-`U` missense VUS into mutually disjoint gnomAD subsets (`ΔΔG ≥ 1.5 kcal/mol`; **Table 4, Part A**, **Fig. 4B**) yielded positive rates of `44.5%` (`49/110`, 95% CI `35.6%–53.9%`) among VUS absent from gnomAD (`AC = 0`), `42.6%` (`98/230`, `36.4%–49.1%`) among singletons (`AC = 1`), and `41.5%` (`95/229`, `35.3%–48.0%`) among recurrent `AC ≥ 2` variants.
+
+Across the `152` non-coding ClinVar *CTSC* variants (**Fig. 5**), AlphaGenome v2 `SPLICE_SITES` achieved perfect separation between pathogenic/likely pathogenic (`n = 12`, `K562` median `0.953`) and benign/likely benign (`n = 105`, median `0.006`) variants across all three cell lineages (`AUC = 1.000`, `p = 1.55 × 10⁻⁸` in `K562`, `HL-60`, and dermal fibroblasts), while `RNA_SEQ` achieved `AUC = 0.953` (`p = 2.96 × 10⁻⁷`) in `K562`, `0.955` in `HL-60`, and `0.967` in dermal fibroblasts (`max_rna_seq_q AUC = 0.962`). Among the `35` non-coding group-`U` variants, AlphaGenome v2 prioritized six canonical splice-site VUS (`c.173-2A>T`, `c.173-2A>G`, `c.641+1G>T`, `c.889+2T>A`, `c.757+1G>A`, `c.890-2A>G`; quantile scores `0.915–0.957`), two donor-region VUS (`c.318+4_318+7del` `0.693`, `c.641+3A>G` `0.413`), and two deep intronic candidates (`c.318+6826G>T` `0.893` and `c.318+8491T>A` `0.285`) (**Table 4, Part B**).
+
+**Table 4.** Disjoint population stratification of *CTSC* missense VUS and top 10 non-coding ClinVar group-`U` candidates prioritized by AlphaGenome v2.$^{{\text{{a}}}}$
+
+{table4_md}
+
+$^{{\text{{a}}}}$Research-use-only disclaimer: all structural and regulatory prioritizations are exploratory, hypothesis-generating outputs generated under AlphaGenome and AlphaFold non-commercial research terms and must not be used for clinical diagnostic reporting.
+
+---
+
+## 4. Discussion
+
+By combining the 2.15 Å experimental human DPPI tetramer structure (`1K3B`) (3) with pre-registered ThermoMPNN stability thresholds and recessive population controls, this study establishes that missense pathogenicity in *CTSC* is driven primarily by thermodynamic core destabilization (`60.8%` with `ΔΔG ≥ 1.5 kcal/mol`, `p = 5.37 × 10⁻⁶`; propeptide `AUC = 0.946`) and secondarily by direct disruption of the catalytic triad (`15.7%`, `p = 4.14 × 10⁻³`) or disulfide bridges (`9.8%`, `p = 0.0188`). This mechanistic profile aligns with biochemical evidence from urinary and leukocyte studies showing that most missense *CTSC* mutations trigger intracellular misfolding, defective pro-cathepsin C maturation, and absence of secreted heavy and light chains (4, 7, 8). Equally important are our negative structural findings: neither proximity to the tetramer subunit interface (`p = 1.00`) nor proximity to the exclusion–catalytic chain interface (`p = 0.509`) enriched for pathogenic variants. In fact, removing the pre-registered tetramer-interface term (the minimalist two-term rule) increased specificity on `AC ≥ 2` controls from `74.4%` to `87.2%` (`LR+ = 4.29`) and achieved `100%` (`4/4`) specificity on homozygous gnomAD controls by eliminating the false-positive classification of `L71M`.
+
+Methodologically, our pre-registered temporal split illustrates why cross-validation must not be equated with external validation. Whereas nested LOOCV on the pre-2016 calibration set yielded `75.0%` sensitivity at `c = 2.25 kcal/mol`, out-of-sample sensitivity on the 31 post-2015 literature variants dropped to `58.1%` (`78.4%` across all 51 variants at `c = 1.5 kcal/mol`). Furthermore, decomposing VUS into disjoint gnomAD subgroups (`AC = 0`, `AC = 1`, `AC ≥ 2`) avoided the circularity of applying calibration likelihood ratios back onto overlapping population controls, showing a modest gradient (`44.5%` in `AC = 0` vs. `41.5%` in `AC ≥ 2`) consistent with autosomal recessive carrier tolerance in gnomAD. Finally, the mechanistic dissociation of `A253T`—benign by 3D protein stability (`ΔΔG = −0.43 kcal/mol`) but strongly pathogenic by AlphaGenome v2 splicing (`0.8589`) (9)—demonstrates that integrating 3D structural energy models with deep genomic sequence models resolves exonic splicing lesions that evade protein-only pipelines.
+
+Several limitations must be noted: (i) the number of homozygous missense controls in `1K3B` is small (`n = 4`), resulting in wide Wilson 95% CIs (`30.1%–95.4%`); (ii) `ΔΔG` predictions rely on a single tool (ThermoMPNN, typical RMSE `0.71–1.51 kcal/mol`) (13) without explicit tetramer interface energy terms; (iii) automated regex extraction of post-2015 variants from review tables (`PMC11337848`) (10) may include variants originally described earlier or carrying heterogeneous clinical evidence; (iv) network timeouts on the Ensembl VEP REST server prevented direct SpliceAI comparison in this run; (v) ClinVar classifications and supervised predictors (`AlphaMissense`, `REVEL`, `MetaRNN`, `CADD`) partially reflect population frequency or computational criteria (18), whereas zero-shot `ESM-1b` (`AUC = 0.820`) and biophysical `ThermoMPNN` (`AUC = 0.740`) avoid clinical label circularity; and (vi) no wet-laboratory assays were performed.
+
+---
+
+## Declarations
+
+**Ethics statement:** No biological specimens or DNA were collected and no human participants were recruited. Only publicly accessible, fully anonymous, variant-level and aggregate data from ClinVar, gnomAD, UniProt, PDB, and published literature were analysed; institutional ethics committee approval and informed consent were not required.
+
+**Conflict of interest:** The authors declare no conflicts of interest.
+
+**Funding:** Supported in part by Google Cloud credits (Google LLC); no specific external monetary grants were received.
+
+**Data and code availability:** All Python scripts, pre-registration records, consolidated CSV tables, sanitized ThermoMPNN outputs, and AlphaGenome v2 score tables are openly available at `https://github.com/contatofilipevono-rgb/papillon-lefevre-ctsc`. AlphaGenome v2 and AlphaFold Database resources were used strictly under non-commercial academic research terms; outputs must not be used for clinical diagnosis or commercial purposes.
+
+**Author contributions (CRediT):** **Filipe Martins Vono:** Conceptualization; Data curation; Formal analysis; Investigation; Methodology; Software; Visualization; Writing – original draft; Writing – review & editing. **Valeria Gonzaga Santos:** Validation; Investigation; Writing – review & editing. **Andre Naufel de Toledo:** Supervision; Validation; Writing – review & editing.
+
+---
+
+## Figure Legends
+
+**Figure 1. Structural map of mature human cathepsin C (PDB `1K3B`).**  
+Minimum heavy-atom Euclidean distance from each of the `352` resolved residues (UniProt `P53634` numbering: exclusion domain `25–143`, heavy chain `231–394`, light chain `395–463`) to the catalytic triad (`Cys258`, `His405`, `Asn427`). Dark gray bars indicate positions harbouring pathogenic missense variants (`n = 51` in `1K3B`). Markers above bars classify each variant by primary mechanism using a colour-vision-deficiency-safe palette: active site `< 4.0 Å` (blue `#2a78d6`), disulfide bond disruption (violet `#6250d6`), thermodynamic destabilization (`ΔΔG ≥ 2.25 kcal/mol`, orange `#eb6834`), or unclassified (gray `#8a8984`).
+
+**Figure 2. Catalytic triad proximity versus predicted thermodynamic destabilization (`ΔΔG`) across *CTSC* missense variants.**  
+Pathogenic variants (`n = 51`: calibration `n = 20`, circles; independent post-2015 external test `n = 31`, triangles) plotted against gnomAD v4.1 recurrent controls (`AC ≥ 2`, `n = 234`, gray circles) and homozygous controls (`homozygote_count ≥ 1`, `n = 4`, black-outlined diamonds). Dashed lines indicate the pre-registered catalytic threshold (`4.0 Å`) and LOOCV stability cut-off (`2.25 kcal/mol`). The exonic splicing mutant `A253T` (`c.757G>A`, `ΔΔG = −0.43 kcal/mol`, `7.52 Å`) is annotated.
+
+**Figure 3. Discrimination between pathogenic *CTSC* missense variants and gnomAD v4.1 population controls.**  
+**(A)** ThermoMPNN `ΔΔG` (`1K3B`): median `1.796` vs. `0.762 kcal/mol` (`AUC = 0.740`, 95% CI `0.657–0.813`, `p = 8.33 × 10⁻⁸`). **(B)** AlphaMissense score: median `0.853` vs. `0.208` (`AUC = 0.819`, 95% CI `0.753–0.877`, `p = 8.94 × 10⁻¹³`). **(C)** ROC curves comparing AlphaMissense and ThermoMPNN `ΔΔG`. Homozygous controls (`n = 4`) are plotted as black-outlined diamonds.
+
+**Figure 4. Rule validation and disjoint stratification of variants of uncertain significance (VUS).**  
+**(A)** Sensitivity and specificity (with Wilson 95% CIs) of the pre-registered four-term structural rule (`c = 2.25 kcal/mol`) across LOOCV calibration (`15/20 = 75.0%`), independent post-2015 external test (`18/31 = 58.1%`), `AC ≥ 2` controls (`174/234 = 74.4%` specificity), and homozygous controls (`3/4 = 75.0%`; `4/4 = 100%` for the two-term rule). **(B)** Proportion of rule-positive VUS (`ΔΔG ≥ 1.5 kcal/mol`) across mutually disjoint gnomAD subgroups: absent (`AC = 0`, `44.5%`), singleton (`AC = 1`, `42.6%`), and recurrent (`AC ≥ 2`, `41.5%`).
+
+**Figure 5. AlphaGenome v2 predictions for non-coding ClinVar *CTSC* variants (`n = 152`) in K562 myeloid cells (`EFO:0002067`).**  
+**(A)** `SPLICE_SITES` quantile scores across Pathogenic/Likely pathogenic (`n = 12`, median `0.953`), Benign/Likely benign (`n = 105`, median `0.006`; `AUC = 1.000`, `p = 1.55 × 10⁻⁸`), and group-`U` VUS (`n = 35`). **(B)** `RNA_SEQ` quantile scores (`AUC = 0.953`, `p = 2.96 × 10⁻⁷`).
+
+---
+
+## References
+
+1. Toomes C, James J, Wood AJ, Wu CL, McCormick D, Lench N, Hewitt C, Moynihan L, Roberts E, Woods CG, Markham A, Wong M, Widmer R, Ghaffar KA, Pemberton M, Hussein IR, Temtamy SA, Davies R, Read AP, Sloan P, Dixon MJ, Thakker NS. Loss-of-function mutations in the cathepsin C gene result in periodontal disease and palmoplantar keratosis. Nat Genet. 1999;23(4):421–424. doi:10.1038/70525
+2. Hart PS, Zhang Y, Firatli E, Uygur C, Lotfazar M, Michalec MD, Marks JJ, Lu X, Coates BJ, Seow WK, Marshall R, Williams D, Reed JB, Wright JT, Hart TC. Identification of cathepsin C mutations in ethnically diverse papillon-Lefèvre syndrome patients. J Med Genet. 2000;37(12):927–932. doi:10.1136/jmg.37.12.927
+3. Turk D, Janjić V, Stern I, Podobnik M, Lamba D, Dahl SW, Lauritzen C, Pedersen J, Turk V, Turk B. Structure of human dipeptidyl peptidase I (cathepsin C): exclusion domain added to an endopeptidase framework creates the machine for activation of granular serine proteases. EMBO J. 2001;20(23):6570–6582. doi:10.1093/emboj/20.23.6570
+4. Pham CT, Ivanovich JL, Raptis SZ, Zehnbauer B, Ley TJ. Papillon-Lefèvre syndrome: correlating the molecular, cellular, and clinical consequences of cathepsin C/dipeptidyl peptidase I deficiency in humans. J Immunol. 2004;173(12):7277–7281. doi:10.4049/jimmunol.173.12.7277
+5. Moghaddasian M, Arab H, Dadkhah E, Boostani H, Babak AR, Abbaszadegan MR. Protein modeling of cathepsin C mutations found in Papillon-Lefèvre syndrome. Gene. 2014;538(1):182–187. doi:10.1016/j.gene.2013.11.079
+6. Nagy N, Vályi P, Csoma Z, Sulák A, Tripolszki K, Farkas K, Paschali E, Papp F, Tóth L, Fábos B, Kemény L, Nagy K, Széll M. CTSC and Papillon-Lefèvre syndrome: detection of recurrent mutations in Hungarian patients, a review of published variants and database update. Mol Genet Genomic Med. 2014;2(3):217–228. doi:10.1002/mgg3.61
+7. Lamort AS, Hamon Y, Czaplewski C, Gieldon A, Seren S, Coquet L, Lecaille F, Lesner A, Lalmanach G, Gauthier F, Jenne D, Korkmaz B. Processing and Maturation of Cathepsin C Zymogen: A Biochemical and Molecular Modeling Analysis. Int J Mol Sci. 2019;20(19):4747. doi:10.3390/ijms20194747
+8. Sabry S, Abouzaid MR, Mostafa MI, Abdel-Hamid MS, Saad AK, Soliman HN, Ahmed NEB. Abnormal profiles of cathepsin C secreted in urine of Papillon Lefevre syndrome patients. Eur J Med Genet. 2022;65(10):104605. doi:10.1016/j.ejmg.2022.104605
+9. Abdel-Hamid MS, Abouzaid MR, Mostafa MI, Ahmed NE. Papillon-Lefevre syndrome in twelve Egyptian patients: Five novel CTSC variants and functional characterization of a missense variant and its effect on splicing. Arch Oral Biol. 2024;158:105869. doi:10.1016/j.archoralbio.2023.105869
+10. Chitsamankhun C, Siritongtaworn N, Fournier BPJ, Sriwattanapong K, Theerapanon T, Samaranayake L, Porntaveetus T. Cathepsin C in health and disease: from structural insights to therapeutic prospects. J Transl Med. 2024;22(1):777. doi:10.1186/s12967-024-05589-7
+11. Landrum MJ, Chitipiralla S, Brown GR, Chen C, Gu B, Hart J, Hoffman D, Jang W, Kaur K, Liu C, Lyoshin V, Maddipatla Z, Maiti R, Mitchell J, O'Leary N, Riley GR, Shi W, Zhou G, Schneider V, Maglott D, Holmes JB, Kattman BL. ClinVar: improvements to accessing data. Nucleic Acids Res. 2020;48(D1):D835–D844. doi:10.1093/nar/gkz972
+12. Abramson J, Adler J, Dunger J, Evans R, Green T, Pritzel A, Ronneberger O, Willmore L, Ballard AJ, Bambrick J, Bodenstein SW, Evans DA, Hung CC, O'Neill M, Reiman D, Tunyasuvunakool K, Wu Z, Žemgulytė A, Arvaniti E, Beattie C, Bertolli O, Bridgland A, Cherepanov A, Congreve M, Cowen-Rivers AI, Cowie A, Figurnov M, Fuchs FB, Gladman H, Jain R, Khan YA, Low CMR, Perlin K, Potapenko A, Savy P, Singh S, Stecula A, Thillaisundaram A, Tong C, Yakneen S, Zhong ED, Zielinski M, Žídek A, Bapst V, Kohli P, Jaderberg M, Hassabis D, Jumper JM. Accurate structure prediction of biomolecular interactions with AlphaFold 3. Nature. 2024;630(8016):493–500. doi:10.1038/s41586-024-07487-w
+13. Dieckhaus H, Brocidiacono M, Randolph NZ, Kuhlman B. Transfer learning to leverage larger datasets for improved prediction of protein stability changes. Proc Natl Acad Sci U S A. 2024;121(6):e2314853121. doi:10.1073/pnas.2314853121
+14. Chen S, Francioli LC, Goodrich JK, Collins RL, Kanai M, Wang Q, Alföldi J, Watts NA, Vittal C, Gauthier LD, Poterba T, Wilson MW, Tarasova Y, Phu W, Grant R, Yohannes MT, Koenig Z, Farjoun Y, Banks E, Donnelly S, Gabriel S, Gupta N, Ferriera S, Tolonen C, Novod S, Bergelson L, Roazen D, Ruano-Rubio V, Covarrubias M, Llanwarne C, Petrillo N, Wade G, Jeandet T, Munshi R, Tibbetts K, Genome Aggregation Database Consortium, O'Donnell-Luria A, Solomonson M, Seed C, Martin AR, Talkowski ME, Rehm HL, Daly MJ, Tiao G, Neale BM, MacArthur DG, Karczewski KJ. A genomic mutational constraint map using variation in 76,156 human genomes. Nature. 2024;625(7993):92–100. doi:10.1038/s41586-023-06045-0
+15. Cheng J, Novati G, Pan J, Bycroft C, Žemgulytė A, Applebaum T, Pritzel A, Wong LH, Zielinski M, Sargeant T, Schneider RG, Senior AW, Jumper J, Hassabis D, Kohli P, Avsec Ž. Accurate proteome-wide missense variant effect prediction with AlphaMissense. Science. 2023;381(6664):eadg7492. doi:10.1126/science.adg7492
+16. Avsec Ž, Latysheva N, Cheng J, Novati G, Taylor KR, Ward T, Bycroft C, Nicolaisen L, Arvaniti E, Pan J, Thomas R, Dutordoir V, Perino M, De S, Karollus A, Gayoso A, Sargeant T, Mottram A, Wong LH, Drotár P, Kosiorek A, Senior A, Tanburn R, Applebaum T, Basu S, Hassabis D, Kohli P. Advancing regulatory variant effect prediction with AlphaGenome. Nature. 2026;649(8099):1206–1218. doi:10.1038/s41586-025-10014-0
+17. Simel DL, Samsa GP, Matchar DB. Likelihood ratios with confidence: sample size estimation for diagnostic test studies. J Clin Epidemiol. 1991;44(8):763–770. doi:10.1016/0895-4356(91)90128-v
+18. Pejaver V, Byrne AB, Feng BJ, Pagel KA, Mooney SD, Karchin R, O'Donnell-Luria A, Harrison SM, Tavtigian SV, Greenblatt MS, Biesecker LG, Radivojac P, Brenner SE, ClinGen Sequence Variant Interpretation Working Group. Calibration of computational tools for missense variant pathogenicity classification and ClinGen recommendations for PP3/BP4 criteria. Am J Hum Genet. 2022;109(12):2163–2177. doi:10.1016/j.ajhg.2022.10.013
+"""
+    return md
+
+
+def set_cell_border(cell, **kwargs):
+    tcPr = cell._tc.get_or_add_tcPr()
+    tcBorders = tcPr.first_child_found_in("w:tcBorders")
+    if tcBorders is None:
+        tcBorders = OxmlElement("w:tcBorders")
+        tcPr.append(tcBorders)
+    for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+        edge_data = kwargs.get(edge)
+        if edge_data:
+            tag = "w:{}".format(edge)
+            element = tcBorders.find(qn(tag))
+            if element is None:
+                element = OxmlElement(tag)
+                tcBorders.append(element)
+            for key in ["val", "color", "sz", "space"]:
+                if key in edge_data:
+                    element.set(qn("w:{}".format(key)), str(edge_data[key]))
+
+
+def add_formatted_runs(p, text, font_size=11, bold_default=False):
+    # Simple markdown parser for **bold**, *italic*, $^{sup}$
+    tokens = re.split(r"(\*\*.*?\*\*|\*[^*]+?\*|\$\^\{.*?\}\$)", text)
+    for tok in tokens:
+        if not tok:
+            continue
+        r = p.add_run()
+        r.font.name = "Times New Roman"
+        r.font.size = Pt(font_size)
+        if tok.startswith("**") and tok.endswith("**"):
+            r.text = tok[2:-2]
+            r.bold = True
+        elif tok.startswith("*") and tok.endswith("*"):
+            r.text = tok[1:-1]
+            r.italic = True
+            r.bold = bold_default
+        elif tok.startswith("$^{") and tok.endswith("}$"):
+            r.text = tok[3:-2].replace("\\text{", "").replace("}", "")
+            r.font.superscript = True
+            r.bold = bold_default
+        else:
+            r.text = tok.replace("`", "")
+            r.bold = bold_default
+
+
+def md_to_docx(md_text: str, out_docx: Path, tables_only: bool = False):
+    doc = docx.Document()
+    for s in doc.sections:
+        s.top_margin = Inches(1.0)
+        s.bottom_margin = Inches(1.0)
+        s.left_margin = Inches(1.0)
+        s.right_margin = Inches(1.0)
+
+    lines = md_text.splitlines()
+    i = 0
+    while i < len(lines):
+        ln = lines[i].strip()
+        if not ln or ln == "---":
+            i += 1
+            continue
+        if ln.startswith("|"):
+            tbl_lines = []
+            while i < len(lines) and lines[i].strip().startswith("|"):
+                tbl_lines.append(lines[i].strip())
+                i += 1
+            rows_data = [
+                [c.strip() for c in r.strip("|").split("|")]
+                for r in tbl_lines
+                if not re.match(r"^\|[\s\-:|]+\|$", r)
+            ]
+            if rows_data:
+                ncols = max(len(r) for r in rows_data)
+                tbl = doc.add_table(rows=len(rows_data), cols=ncols)
+                tbl.autofit = True
+                for r_idx, r_vals in enumerate(rows_data):
+                    for c_idx in range(ncols):
+                        cell = tbl.cell(r_idx, c_idx)
+                        val = r_vals[c_idx] if c_idx < len(r_vals) else ""
+                        p = cell.paragraphs[0]
+                        p.paragraph_format.space_before = Pt(2)
+                        p.paragraph_format.space_after = Pt(2)
+                        p.paragraph_format.line_spacing = 1.05
+                        add_formatted_runs(p, val, font_size=8.5, bold_default=(r_idx == 0))
+                        if r_idx == 0:
+                            set_cell_border(cell, top={"val": "single", "sz": 12, "color": "000000"},
+                                            bottom={"val": "single", "sz": 6, "color": "000000"})
+                        elif r_idx == len(rows_data) - 1:
+                            set_cell_border(cell, bottom={"val": "single", "sz": 12, "color": "000000"})
+                doc.add_paragraph()
+            continue
+
+        if tables_only:
+            if ln.startswith("**Table "):
+                p = doc.add_paragraph()
+                add_formatted_runs(p, ln, font_size=11)
+            i += 1
+            continue
+
+        p = doc.add_paragraph()
+        p.paragraph_format.line_spacing = 1.5
+        p.paragraph_format.space_after = Pt(6)
+        if ln.startswith("# "):
+            add_formatted_runs(p, ln[2:], font_size=15, bold_default=True)
+        elif ln.startswith("## "):
+            p.paragraph_format.space_before = Pt(12)
+            add_formatted_runs(p, ln[3:], font_size=13, bold_default=True)
+        elif ln.startswith("### "):
+            p.paragraph_format.space_before = Pt(10)
+            add_formatted_runs(p, ln[4:], font_size=11.5, bold_default=True)
+        else:
+            add_formatted_runs(p, ln, font_size=11)
+        i += 1
+
+    doc.save(str(out_docx))
+
+
+def md_to_html(md_text: str, fig_dir: Path | None = None) -> str:
+    def fmt_inline(t):
+        t = html.escape(t)
+        t = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", t)
+        t = re.sub(r"\*([^*]+?)\*", r"<i>\1</i>", t)
+        t = re.sub(r"\$\^\{(.+?)\}\$", lambda m: f"<sup>{m.group(1).replace('\\text{','').replace('}','')}</sup>", t)
+        t = re.sub(r"`([^`]+?)`", r"<code>\1</code>", t)
+        return t
+
+    body = []
+    lines = md_text.splitlines()
+    i = 0
+    while i < len(lines):
+        ln = lines[i].strip()
+        if not ln:
+            i += 1
+            continue
+        if ln == "---":
+            body.append("<hr/>")
+            i += 1
+            continue
+        if ln.startswith("|"):
+            tbl_lines = []
+            while i < len(lines) and lines[i].strip().startswith("|"):
+                tbl_lines.append(lines[i].strip())
+                i += 1
+            rows_data = [
+                [c.strip() for c in r.strip("|").split("|")]
+                for r in tbl_lines
+                if not re.match(r"^\|[\s\-:|]+\|$", r)
+            ]
+            if rows_data:
+                body.append("<table>")
+                for r_idx, r_vals in enumerate(rows_data):
+                    tag = "th" if r_idx == 0 else "td"
+                    tr_cls = " class='last-row'" if r_idx == len(rows_data) - 1 else ""
+                    body.append(f"<tr{tr_cls}>" + "".join(f"<{tag}>{fmt_inline(c)}</{tag}>" for c in r_vals) + "</tr>")
+                body.append("</table>")
+            continue
+        if ln.startswith("# "):
+            body.append(f"<h1>{fmt_inline(ln[2:])}</h1>")
+        elif ln.startswith("## "):
+            body.append(f"<h2>{fmt_inline(ln[3:])}</h2>")
+        elif ln.startswith("### "):
+            body.append(f"<h3>{fmt_inline(ln[4:])}</h3>")
+        else:
+            body.append(f"<p>{fmt_inline(ln)}</p>")
+        i += 1
+
+    if fig_dir:
+        body.append("<div style='page-break-before: always;'></div><h2>Figures</h2>")
+        figs = [
+            ("Fig1_mapa_mecanismos.png", "Figure 1. Structural map of mature human cathepsin C (PDB 1K3B)."),
+            ("Fig2_mecanismos_ddg_distancia.png", "Figure 2. Catalytic triad proximity versus predicted thermodynamic destabilization (ΔΔG)."),
+            ("Fig3_patogenicas_vs_controles.png", "Figure 3. Discrimination between pathogenic CTSC missense variants and gnomAD v4.1 controls."),
+            ("Fig4_validacao_e_vus.png", "Figure 4. Rule validation and disjoint stratification of variants of uncertain significance (VUS)."),
+            ("Fig5_nao_codificantes_alphagenome.png", "Figure 5. AlphaGenome v2 predictions for non-coding ClinVar CTSC variants (n = 152) in K562 myeloid cells."),
+        ]
+        for fname, cap in figs:
+            fpath = fig_dir / fname
+            if fpath.exists():
+                b64 = base64.b64encode(fpath.read_bytes()).decode("ascii")
+                body.append(
+                    f"<div class='fig-box'><img src='data:image/png;base64,{b64}'/><p class='fig-cap'><b>{html.escape(cap)}</b></p></div>"
+                )
+
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<style>
+  @page {{ size: A4; margin: 22mm 18mm 22mm 18mm; }}
+  body {{ font-family: 'Times New Roman', Times, serif; font-size: 11pt; line-height: 1.5; color: #111; }}
+  h1 {{ font-size: 15pt; line-height: 1.25; margin-bottom: 10pt; }}
+  h2 {{ font-size: 13pt; margin-top: 16pt; margin-bottom: 6pt; border-bottom: 1px solid #ddd; padding-bottom: 2pt; }}
+  h3 {{ font-size: 11.5pt; margin-top: 12pt; margin-bottom: 4pt; }}
+  p {{ margin: 0 0 8pt 0; text-align: justify; }}
+  code {{ font-family: 'Times New Roman', Times, serif; }}
+  hr {{ border: none; border-top: 1px solid #ccc; margin: 14pt 0; }}
+  table {{ width: 100%; border-collapse: collapse; margin: 10pt 0 14pt 0; font-size: 8pt; line-height: 1.2; page-break-inside: auto; }}
+  tr {{ page-break-inside: avoid; }}
+  th {{ border-top: 1.5pt solid #000; border-bottom: 0.75pt solid #000; padding: 4pt 3pt; text-align: left; font-weight: bold; }}
+  td {{ padding: 3pt 3pt; vertical-align: top; }}
+  tr.last-row td {{ border-bottom: 1.5pt solid #000; }}
+  .fig-box {{ page-break-inside: avoid; margin: 18pt 0; text-align: center; }}
+  .fig-box img {{ max-width: 100%; max-height: 190mm; object-fit: contain; }}
+  .fig-cap {{ font-size: 9.5pt; text-align: left; margin-top: 6pt; }}
+</style>
+</head>
+<body>
+{''.join(body)}
+</body>
+</html>"""
+
+
+def html_to_pdf(html_str: str, out_pdf: Path):
+    edge = find_edge()
+    tmp_html = out_pdf.with_suffix(".tmp.html")
+    tmp_html.write_text(html_str, encoding="utf-8")
+    try:
+        subprocess.run(
+            [edge, "--headless", "--disable-gpu", "--no-pdf-header-footer",
+             f"--print-to-pdf={out_pdf}", tmp_html.resolve().as_uri()],
+            check=True,
+            capture_output=True,
+            timeout=120,
+        )
+    finally:
+        if tmp_html.exists():
+            tmp_html.unlink()
+
+
+def build_supplementary_xlsx(base: Path, out_xlsx: Path):
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+    sheets = [
+        ("S1_Consolidated_Missense", base / "variantes_CTSC.csv"),
+        ("S2_Functional_Validation", base / "validacao_funcional.csv"),
+        ("S3_AlphaGenome_NonCoding", base / "alphagenome_nao_codificantes.csv"),
+        ("S3b_Expression_By_Cell", base / "expressao_por_celula.csv"),
+        ("S4_Phenotypes_Chitsamankhun", base / "fenotipos_chitsamankhun2024.csv"),
+        ("S5_Structural_Descriptors_1K3B", base / "descritores_estruturais.csv"),
+    ]
+    for title, csv_path in sheets:
+        ws = wb.create_sheet(title=title)
+        rows = ler_csv(csv_path)
+        if not rows:
+            continue
+        headers = list(rows[0].keys())
+        ws.append(headers)
+        for r in rows:
+            ws.append([r[h] for h in headers])
+    wb.save(str(out_xlsx))
+
+
+def export_figures_tiff(base: Path, sub_fig: Path):
+    sub_fig.mkdir(parents=True, exist_ok=True)
+    mapping = [
+        ("Fig1_mapa_mecanismos", "Figure_1_structural_map_1K3B"),
+        ("Fig2_mecanismos_ddg_distancia", "Figure_2_catalytic_vs_destabilization"),
+        ("Fig3_patogenicas_vs_controles", "Figure_3_gnomad_controls_ROC"),
+        ("Fig4_validacao_e_vus", "Figure_4_validation_and_VUS"),
+        ("Fig5_nao_codificantes_alphagenome", "Figure_5_alphagenome_noncoding"),
+    ]
+    for src_stem, dst_stem in mapping:
+        png = base / "figuras" / f"{src_stem}.png"
+        pdf = base / "figuras" / f"{src_stem}.pdf"
+        if pdf.exists():
+            shutil.copy2(pdf, sub_fig / f"{dst_stem}.pdf")
+        if png.exists():
+            shutil.copy2(png, sub_fig / f"{dst_stem}.png")
+            img = Image.open(png)
+            img.save(sub_fig / f"{dst_stem}.tif", compression="tiff_lzw", dpi=(600, 600))
+
+
+def main():
+    base = Path(sys.argv[1])
+    sub = base / "submissao"
+    sub.mkdir(parents=True, exist_ok=True)
+
+    md = build_manuscript_md(base)
+    (sub / "manuscript.md").write_text(md, encoding="utf-8")
+    (base / "manuscrito.md").write_text(md, encoding="utf-8")
+    print("1. manuscript.md e ../manuscrito.md atualizados.")
+
+    md_to_docx(md, sub / "manuscript.docx", tables_only=False)
+    md_to_docx(md, sub / "tables.docx", tables_only=True)
+    print("2. manuscript.docx e tables.docx gerados.")
+
+    html_clean = md_to_html(md, fig_dir=None)
+    html_to_pdf(html_clean, sub / "manuscript.pdf")
+    html_figs = md_to_html(md, fig_dir=base / "figuras")
+    html_to_pdf(html_figs, sub / "manuscript_with_figures_preview.pdf")
+    print("3. manuscript.pdf e manuscript_with_figures_preview.pdf gerados.")
+
+    build_supplementary_xlsx(base, sub / "supplementary.xlsx")
+    print("4. supplementary.xlsx gerado.")
+
+    export_figures_tiff(base, sub / "figuras")
+    print("5. Figuras TIFF 600 dpi LZW + PDF exportadas em submissao/figuras/.")
+
+    cover_md = """# Cover Letter — Manuscript Submission & Preprint Deposit
+
+**Date:** 21 November 2026  
+**To:** The Editor-in-Chief, *Journal of Periodontal Research* / *Journal of Clinical Periodontology* (and *medRxiv* / *bioRxiv* Preprint Server)
+
+Dear Editor,
+
+Please find enclosed our original research manuscript entitled **"Structural Mechanisms of Pathogenic *CTSC* Variants in Papillon-Lefèvre Syndrome: A Pre-Registered Crystal-Structure, ThermoMPNN, and AlphaGenome Study"**, by Filipe Martins Vono, Valeria Gonzaga Santos, and Andre Naufel de Toledo, for consideration as an Original Article.
+
+Biallelic loss-of-function variants in *CTSC* (encoding cathepsin C / dipeptidyl peptidase I, DPPI) cause Papillon-Lefèvre syndrome (PLS), Haim-Munk syndrome, and nonsyndromic aggressive periodontitis. Although more than 100 *CTSC* variants have been reported, previous structural studies have been limited to homology modelling of isolated mutations, and no study has systematically evaluated structural mechanisms against recessive population controls using pre-registered thresholds and independent external validation.
+
+In this pre-registered study (commit `574901d` recorded prior to case–control analysis), we combined the 2.15 Å experimental human DPPI tetramer structure (PDB `1K3B`), ThermoMPNN saturation mutagenesis (`ΔΔG`), gnomAD v4.1 homozygous (`homozygote_count ≥ 1`) and recurrent (`AC ≥ 2`) controls, sequence/language-model benchmarks (`AlphaMissense`, `ESM-1b`, `REVEL`, `MetaRNN`, `CADD`), and AlphaGenome v2 regulatory scoring across `832` missense and `152` non-coding *CTSC* variants. Key findings include:
+
+1. **Dominant biophysical mechanisms and informative negative results:** Pathogenic missense variants act primarily through core thermodynamic destabilization (`60.8%` vs. `26.5%` with `ΔΔG ≥ 1.5 kcal/mol`, `p = 5.37 × 10⁻⁶`; propeptide `AUC = 0.946`, `p = 3.07 × 10⁻³`) and secondarily through direct catalytic triad proximity (`< 4.0 Å`: `15.7%` vs. `3.8%`, `p = 4.14 × 10⁻³`) or disulfide bond disruption (`9.8%` vs. `2.1%`, `p = 0.0188`), whereas tetramer interface proximity (`p = 1.00`) and exclusion–catalytic interface proximity (`p = 0.509`) do not discriminate groups.
+2. **Realistic generalization via independent post-2015 external testing:** Nested leave-one-out calibration selected `ΔΔG ≥ 2.25 kcal/mol` (`75.0%` sensitivity, `74.4%` specificity on `AC ≥ 2`, `100%` [`4/4`] specificity on homozygous controls under the two-term rule), while out-of-sample sensitivity on 31 post-2015 external test variants was `58.1%` (`78.4%` overall at `1.5 kcal/mol`).
+3. **Functional concordance and exonic splicing rescue by AlphaGenome v2:** The structural rule confirmed `4/4` leukocyte DPPI-deficient missense mutants from Pham et al. (2004), while the experimentally proven exonic splicing mutant `A253T` (`c.757G>A`, `ΔΔG = −0.43 kcal/mol`) was rescued by AlphaGenome v2 (`SPLICE_SITES = 0.8589`). Across `152` non-coding ClinVar variants, AlphaGenome v2 achieved `AUC = 1.000` for splicing (`p = 1.55 × 10⁻⁸`) across three cell lineages.
+
+All data, pre-registration logs, and reproducible Python scripts are openly archived at `https://github.com/contatofilipevono-rgb/papillon-lefevre-ctsc` under non-commercial academic research terms. This manuscript is original, has not been published elsewhere, and all authors have approved the submission and declare no conflicts of interest.
+
+Sincerely,
+
+**Filipe Martins Vono** (Corresponding Author)  
+School of Dentistry, Centro Universitário de Belo Horizonte (UniBH), Belo Horizonte, MG, Brazil  
+Email: contatofilipevono@gmail.com | ORCID: `0009-0009-4994-8533`
+"""
+    md_to_docx(cover_md, sub / "cover_letter.docx", tables_only=False)
+    html_to_pdf(md_to_html(cover_md, fig_dir=None), sub / "cover_letter.pdf")
+    print("6. cover_letter.docx e cover_letter.pdf gerados.")
+
+
+if __name__ == "__main__":
+    main()
